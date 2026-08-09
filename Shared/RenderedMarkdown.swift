@@ -13,6 +13,25 @@ struct RenderedMarkdown: Sendable {
     let linkTargets: [String: String]
     let imageAssets: [String: URL]
     let imageRoot: URL?
+    let projection: DocumentProjection?
+
+    init(
+        revision: UUID,
+        bodyHTML: String,
+        outline: [OutlineEntry],
+        linkTargets: [String: String],
+        imageAssets: [String: URL],
+        imageRoot: URL?,
+        projection: DocumentProjection? = nil
+    ) {
+        self.revision = revision
+        self.bodyHTML = bodyHTML
+        self.outline = outline
+        self.linkTargets = linkTargets
+        self.imageAssets = imageAssets
+        self.imageRoot = imageRoot
+        self.projection = projection
+    }
 
     var resourceToken: String {
         revision.uuidString.lowercased()

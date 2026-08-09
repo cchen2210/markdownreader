@@ -7,7 +7,6 @@ struct MarkdownWebView: NSViewRepresentable {
     let documentURL: URL?
     let title: String
     let style: RenderStyle
-    let restorePosition: Bool
     @ObservedObject var controller: ReaderWebController
 
     func makeCoordinator() -> Coordinator {
@@ -31,7 +30,6 @@ struct MarkdownWebView: NSViewRepresentable {
             documentURL: documentURL,
             title: title,
             style: style,
-            restorePosition: restorePosition,
             in: webView
         )
         return webView
@@ -43,13 +41,11 @@ struct MarkdownWebView: NSViewRepresentable {
             documentURL: documentURL,
             title: title,
             style: style,
-            restorePosition: restorePosition,
             in: webView
         )
     }
 
     static func dismantleNSView(_ webView: WKWebView, coordinator: Coordinator) {
-        coordinator.persistReadingPosition(in: webView)
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -65,7 +61,6 @@ struct MarkdownWebView: NSViewRepresentable {
         private var loadedStyle: RenderStyle?
         private var pendingScrollFraction: Double?
         private var activeDocumentURL: URL?
-        private var restorePosition = false
 
         init(controller: ReaderWebController) {
             self.controller = controller
@@ -76,7 +71,6 @@ struct MarkdownWebView: NSViewRepresentable {
             documentURL: URL?,
             title: String,
             style: RenderStyle,
-            restorePosition: Bool,
             in webView: WKWebView
         ) {
             guard rendered.revision != loadedRevision || style != loadedStyle else { return }
@@ -84,7 +78,6 @@ struct MarkdownWebView: NSViewRepresentable {
             let isInitialLoad = loadedRevision == nil
             self.rendered = rendered
             self.documentURL = documentURL
-            self.restorePosition = restorePosition
             schemeHandler.update(rendered: rendered, title: title, style: style)
             loadedRevision = rendered.revision
             loadedStyle = style
@@ -95,7 +88,7 @@ struct MarkdownWebView: NSViewRepresentable {
             activeDocumentURL = nextURL
 
             if isInitialLoad {
-                pendingScrollFraction = restorePosition ? documentURL.flatMap(ReadingPositionStore.fraction) : nil
+                pendingScrollFraction = nil
                 webView.load(URLRequest(url: nextURL))
                 return
             }
@@ -107,15 +100,8 @@ struct MarkdownWebView: NSViewRepresentable {
             }
         }
 
-        func persistReadingPosition(in webView: WKWebView) {
-            guard restorePosition, let documentURL else { return }
-            webView.evaluateJavaScript(ReadingPositionStore.scrollFractionJavaScript) { result, _ in
-                guard let fraction = result as? Double else { return }
-                ReadingPositionStore.set(fraction, for: documentURL)
-            }
-        }
-
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            controller?.didFinishDocumentLoad()
             guard let fraction = pendingScrollFraction else { return }
             pendingScrollFraction = nil
             guard fraction > 0 else { return }

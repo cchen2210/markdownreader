@@ -99,9 +99,10 @@ final class MarkdownRendererTests: XCTestCase {
             ]
         )
         XCTAssertEqual(rendered.bodyHTML.components(separatedBy: "class=\"autolink\"").count - 1, 3)
-        XCTAssertTrue(rendered.bodyHTML.contains("<code>https://code.example</code>"))
+        XCTAssertTrue(rendered.bodyHTML.contains("<code><span data-memory-run="))
+        XCTAssertTrue(rendered.bodyHTML.contains(">https://code.example</span></code>"))
         XCTAssertFalse(rendered.bodyHTML.contains("<a href=\"mdreader-link://open/\(rendered.resourceToken)/link-3\"><a"))
-        XCTAssertTrue(rendered.bodyHTML.contains(">https://named.example</a>"))
+        XCTAssertTrue(rendered.bodyHTML.contains(">https://named.example</span></a>"))
     }
 
     func testRendersFootnotesWithMarkdownRepeatedReferencesAndBacklinks() {
@@ -138,7 +139,8 @@ final class MarkdownRendererTests: XCTestCase {
 
         XCTAssertEqual(rendered.bodyHTML.components(separatedBy: "<sup class=\"footnote-ref\">").count - 1, 1)
         XCTAssertTrue(rendered.bodyHTML.contains("[^n]"))
-        XCTAssertTrue(rendered.bodyHTML.contains("<em><sup class=\"footnote-ref\">"))
+        XCTAssertTrue(rendered.bodyHTML.contains("<em><span data-memory-run="))
+        XCTAssertTrue(rendered.bodyHTML.contains("<sup class=\"footnote-ref\">"))
         XCTAssertTrue(rendered.bodyHTML.contains("“Quoted”"))
     }
 
@@ -315,10 +317,14 @@ final class MarkdownRendererTests: XCTestCase {
     }
 
     func testWelcomeSampleExercisesLocalAssetsAndLinks() throws {
-        let repositoryURL = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        let documentURL = repositoryURL.appendingPathComponent("Samples/Welcome.md")
+        let testBundle = Bundle(for: Self.self)
+        let documentURL = try XCTUnwrap(
+            testBundle.url(
+                forResource: "Welcome",
+                withExtension: "md",
+                subdirectory: "Samples"
+            )
+        )
         let source = try String(contentsOf: documentURL, encoding: .utf8)
         let rendered = MarkdownRenderer.render(source: source, documentURL: documentURL)
 

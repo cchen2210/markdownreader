@@ -39,7 +39,6 @@ final class ReaderUtilityTests: XCTestCase {
         let suiteName = "MarkdownReaderTests.Positions.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
-        defaults.set(0.5, forKey: "reader.position.legacy")
 
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         for index in 0...ReadingPositionStore.maximumEntries {
@@ -51,7 +50,6 @@ final class ReaderUtilityTests: XCTestCase {
         let newest = root.appendingPathComponent("private-note-\(ReadingPositionStore.maximumEntries).md")
         XCTAssertNil(ReadingPositionStore.fraction(for: oldest, defaults: defaults))
         XCTAssertEqual(ReadingPositionStore.fraction(for: newest, defaults: defaults), 1)
-        XCTAssertNil(defaults.object(forKey: "reader.position.legacy"))
 
         let storedData = try XCTUnwrap(defaults.data(forKey: ReadingPositionStore.storageKey))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: storedData) as? [String: Any])
@@ -59,6 +57,103 @@ final class ReaderUtilityTests: XCTestCase {
         let serialized = String(decoding: storedData, as: UTF8.self)
         XCTAssertFalse(serialized.contains("private-note"))
         XCTAssertFalse(serialized.contains(Data(newest.path.utf8).base64EncodedString()))
+    }
+
+    func testLegacyPositionLookupAndRemovalTouchOnlyRequestedDocument() throws {
+        let suiteName = "MarkdownReaderTests.LegacyPositions.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let requestedURL = root.appendingPathComponent("requested.md")
+        let untouchedURL = root.appendingPathComponent("untouched.md")
+        ReadingPositionStore.set(0.42, for: requestedURL, defaults: defaults, now: 10)
+        ReadingPositionStore.set(0.84, for: untouchedURL, defaults: defaults, now: 20)
+
+        let position = try XCTUnwrap(
+            ReadingPositionStore.legacyPosition(for: requestedURL, defaults: defaults)
+        )
+        XCTAssertEqual(position.fraction, 0.42)
+        XCTAssertFalse(position.keyHash.contains("requested"))
+        XCTAssertTrue(ReadingPositionStore.removeLegacyPosition(position, defaults: defaults))
+
+        XCTAssertNil(ReadingPositionStore.legacyPosition(for: requestedURL, defaults: defaults))
+        XCTAssertEqual(
+            ReadingPositionStore.legacyPosition(for: untouchedURL, defaults: defaults)?.fraction,
+            0.84
+        )
+        XCTAssertEqual(ReadingPositionStore.fraction(for: untouchedURL, defaults: defaults), 0.84)
+    }
+
+    func testLegacyRemovalDoesNotDeleteAConcurrentNewerPosition() throws {
+        let suiteName = "MarkdownReaderTests.LegacyPositionRace.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("race.md")
+        ReadingPositionStore.set(0.2, for: url, defaults: defaults, now: 10)
+        let staleSnapshot = try XCTUnwrap(
+            ReadingPositionStore.legacyPosition(for: url, defaults: defaults)
+        )
+
+        ReadingPositionStore.set(0.9, for: url, defaults: defaults, now: 20)
+
+        XCTAssertFalse(
+            ReadingPositionStore.removeLegacyPosition(staleSnapshot, defaults: defaults)
+        )
+        XCTAssertEqual(ReadingPositionStore.fraction(for: url, defaults: defaults), 0.9)
+    }
+
+    func testLegacyPositionSurvivesFailedImport() throws {
+        enum ImportFailure: Error { case expected }
+        let suiteName = "MarkdownReaderTests.LegacyPositionFailure.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("retry.md")
+        ReadingPositionStore.set(0.7, for: url, defaults: defaults, now: 10)
+
+        XCTAssertThrowsError(
+            try ReadingPositionStore.consumeLegacyPosition(for: url, defaults: defaults) { _ in
+                throw ImportFailure.expected
+            }
+        ) { error in
+            XCTAssertTrue(error is ImportFailure)
+        }
+        XCTAssertEqual(
+            ReadingPositionStore.legacyPosition(for: url, defaults: defaults)?.fraction,
+            0.7
+        )
+    }
+
+    func testIndividualLegacyKeyImportDoesNotCrawlSiblingKeys() throws {
+        let suiteName = "MarkdownReaderTests.IndividualLegacyPosition.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString)
+            .appendingPathComponent("individual.md")
+        ReadingPositionStore.set(0.1, for: url, defaults: defaults, now: 10)
+        let mapPosition = try XCTUnwrap(
+            ReadingPositionStore.legacyPosition(for: url, defaults: defaults)
+        )
+        XCTAssertTrue(ReadingPositionStore.removeLegacyPosition(mapPosition, defaults: defaults))
+        let individualKey = "reader.position.\(mapPosition.keyHash)"
+        let siblingKey = "reader.position.unrelated-hash"
+        defaults.set(0.31, forKey: individualKey)
+        defaults.set(0.62, forKey: siblingKey)
+
+        var importedFraction: Double?
+        XCTAssertTrue(
+            ReadingPositionStore.consumeLegacyPosition(for: url, defaults: defaults) { position in
+                importedFraction = position.fraction
+            }
+        )
+
+        XCTAssertEqual(importedFraction, 0.31)
+        XCTAssertNil(defaults.object(forKey: individualKey))
+        XCTAssertEqual(defaults.double(forKey: siblingKey), 0.62)
     }
 
     func testLinkResolverAllowsSafeTargetsAndBlocksEscapes() throws {
@@ -83,6 +178,15 @@ final class ReaderUtilityTests: XCTestCase {
         XCTAssertNil(LinkTargetResolver.resolve("file:///tmp/secret.md", relativeTo: documentURL))
         XCTAssertNil(LinkTargetResolver.resolve("javascript:alert(1)", relativeTo: documentURL))
         XCTAssertNil(LinkTargetResolver.resolve("data:text/html,owned", relativeTo: documentURL))
+    }
+
+    func testHeadingBookmarksUseGeometryWithoutWrappingReadableText() {
+        XCTAssertTrue(MemoryWebBridge.markJavaScript.contains("row.kind !== 'passage'"))
+        XCTAssertTrue(MemoryWebBridge.markJavaScript.contains("data-memory-block-tokens"))
+        XCTAssertTrue(MemoryWebBridge.geometryHelperJavaScript.contains("memoryBlockTokens"))
+        XCTAssertFalse(
+            MemoryWebBridge.markJavaScript.contains("row.kind === 'headingBookmark' && range.extractContents")
+        )
     }
 
     @MainActor

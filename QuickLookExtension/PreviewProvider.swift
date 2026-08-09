@@ -6,7 +6,11 @@ final class PreviewProvider: QLPreviewProvider, QLPreviewingController {
     func providePreview(for request: QLFilePreviewRequest) async throws -> QLPreviewReply {
         let data = try Data(contentsOf: request.fileURL, options: .mappedIfSafe)
         let source = try MarkdownTextDecoder.decode(data)
-        let rendered = MarkdownRenderer.render(source: source, documentURL: request.fileURL)
+        let rendered = MarkdownRenderer.render(
+            source: source,
+            sourceData: data,
+            documentURL: request.fileURL
+        )
         let title = request.fileURL.lastPathComponent
 
         let previewHTML = HTMLDocumentBuilder.buildPreview(rendered: rendered, title: title, style: .standard)

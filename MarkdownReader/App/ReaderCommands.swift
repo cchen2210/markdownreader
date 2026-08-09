@@ -15,6 +15,14 @@ struct ReaderActions {
     let printDocument: () -> Void
     let openInEditor: () -> Void
     let copyPath: () -> Void
+    let rememberPassage: () -> Void
+    let rememberPassageWithNote: () -> Void
+    let bookmarkHeading: () -> Void
+    let toggleMemory: () -> Void
+    let openReadingMemory: () -> Void
+    let previousMemory: () -> Void
+    let nextMemory: () -> Void
+    let deleteMemory: () -> Void
 }
 
 private struct ReaderActionsKey: FocusedValueKey {
@@ -30,6 +38,7 @@ extension FocusedValues {
 
 struct ReaderCommands: Commands {
     @FocusedValue(\.readerActions) private var actions
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandMenu("Reader") {
@@ -57,6 +66,40 @@ struct ReaderCommands: Commands {
             Button("Next Heading") { actions?.nextHeading() }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
                 .disabled(actions == nil)
+
+            Divider()
+
+            Button("Remember Passage") { actions?.rememberPassage() }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(actions?.canUsePreview != true)
+            Button("Remember Passage with Note") { actions?.rememberPassageWithNote() }
+                .keyboardShortcut("m", modifiers: [.command, .option, .shift])
+                .disabled(actions?.canUsePreview != true)
+            Button("Bookmark This Heading") { actions?.bookmarkHeading() }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .disabled(actions?.canUsePreview != true)
+
+            Divider()
+
+            Button("Toggle Document Memory") { actions?.toggleMemory() }
+                .keyboardShortcut("m", modifiers: [.command, .control])
+                .disabled(actions?.canUsePreview != true)
+            Button("Open Reading Memory") {
+                if let actions {
+                    actions.openReadingMemory()
+                } else {
+                    openWindow(id: "reading-memory")
+                }
+            }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            Button("Previous Memory") { actions?.previousMemory() }
+                .keyboardShortcut("[", modifiers: [.command, .option])
+                .disabled(actions?.canUsePreview != true)
+            Button("Next Memory") { actions?.nextMemory() }
+                .keyboardShortcut("]", modifiers: [.command, .option])
+                .disabled(actions?.canUsePreview != true)
+            Button("Delete Selected Memory") { actions?.deleteMemory() }
+                .disabled(actions?.canUsePreview != true)
 
             Divider()
 

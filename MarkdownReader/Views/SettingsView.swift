@@ -46,7 +46,15 @@ struct SettingsView: View {
                     Text("Disabled")
                         .foregroundStyle(.secondary)
                 }
-                Text("Markdown is rendered locally. Embedded HTML is shown as inert text, and external links open in your default browser only after you click them.")
+                LabeledContent("Reading Memory") {
+                    Text("Local SQLite only")
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Cloud sync") {
+                    Text("None")
+                        .foregroundStyle(.secondary)
+                }
+                Text("Markdown is rendered locally. Reading Memory stores saved passages and notes in private app storage and never edits the source file. Embedded HTML is shown as inert text, and external links open in your default browser only after you click them.")
                     .foregroundStyle(.secondary)
             }
             .formStyle(.grouped)

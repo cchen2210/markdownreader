@@ -55,6 +55,12 @@ enum HTMLDocumentBuilder {
             : "-apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif"
         let safeTitle = escapeText(title)
         let colorScheme = colorSchemeCSS(for: style.appearance)
+        let memoryContextAttributes: String
+        if let projection = rendered.projection {
+            memoryContextAttributes = " data-source-revision=\"\(escapeAttribute(projection.source.revisionHash))\" data-projection-version=\"\(projection.version)\" data-render-revision=\"\(projection.renderRevision.uuidString.lowercased())\""
+        } else {
+            memoryContextAttributes = ""
+        }
 
         return """
         <!doctype html>
@@ -142,6 +148,15 @@ enum HTMLDocumentBuilder {
           .footnotes ol { margin-bottom: 0; }
           .footnotes li { padding-left: 0.3em; }
           .footnote-backref { font-family: -apple-system, sans-serif; margin-left: 0.28em; text-decoration: none; }
+          mark.memory-mark {
+            background: color-mix(in srgb, var(--accent) 13%, transparent);
+            color: inherit;
+            text-decoration: underline;
+            text-decoration-color: var(--accent);
+            text-decoration-thickness: 1px;
+            text-underline-offset: 0.18em;
+          }
+          mark.memory-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
           ::selection { background: var(--selection); }
           @media (max-width: 700px) { main { width: calc(100vw - 32px); padding-top: 32px; } }
           @media print {
@@ -151,10 +166,11 @@ enum HTMLDocumentBuilder {
             a { text-decoration: underline; }
             h1, h2, h3 { break-after: avoid; }
             pre, blockquote, table { break-inside: avoid; }
+            mark.memory-mark { background: transparent; text-decoration: none; }
           }
           </style>
         </head>
-        <body><main id="reader" role="main">\(rendered.bodyHTML)</main></body>
+        <body><main id="reader" role="main"\(memoryContextAttributes)>\(rendered.bodyHTML)</main></body>
         </html>
         """
     }

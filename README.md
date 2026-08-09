@@ -24,6 +24,14 @@ Quit Markdown Reader before updating it. Both scripts assemble and verify a stag
 - Preferred-editor handoff, Reveal in Finder, Copy Path, and Copy Markdown
 - Data-based Quick Look extension sharing the same renderer
 - A no-network, no-document-JavaScript WebKit boundary
+- **Reading Memory** for explicitly saving passages, heading bookmarks, and private notes without modifying the Markdown file
+- A responsive Marginalia surface with an in-document gutter, compact rail, and repair inspector
+- A global Reading Memory window with full-text search, favourites, continue-reading state, repair review, and Markdown or JSON export
+- Exact-only anchor recovery after external edits, with visible ambiguous/orphaned states and explicit manual reattachment
+
+Reading Memory never saves a text selection on its own. Use **Reader → Remember Passage** (`⌘⇧M`), **Remember Passage with Note** (`⌘⌥⇧M`), or **Bookmark This Heading** (`⌘⇧B`). Open the global notebook with `⌘⇧R` and toggle the current document’s memory surface with `⌘⌃M`.
+
+All Reading Memory data stays in a private local SQLite database at `~/Library/Application Support/com.cchen.MarkdownReader/ReadingMemory.sqlite3`. Notes and anchor evidence are separate from the source document. Export is the only built-in path that copies this data elsewhere; exported files are written from the exact previewed bytes with owner-only permissions.
 
 ## Build
 
@@ -67,10 +75,10 @@ MARKDOWN_READER_INSTALL_ROOT=/tmp/MarkdownReaderApplications \
 xcodegen generate
 ```
 
-XcodeGen is not part of the build or install workflow. The only third-party source dependency is the pinned Swift Markdown 0.8.0 package from the Swift project; the first build may fetch it from GitHub.
+XcodeGen is not part of the build or install workflow. Third-party source dependencies are pinned to Swift Markdown 0.8.0 and GRDB 7.10.0; the first build may fetch them from GitHub.
 
 ## Current scope
 
-This release is deliberately read-only. It does not include a source editor, accounts, cloud sync, vaults, plugins, rendered math, executable Mermaid diagrams, or remote images. Conventional footnote definitions and indented continuation blocks are supported; lazy unindented continuations, nested references inside footnote definitions, and escaped closing brackets in footnote identifiers remain literal Markdown.
+This release is deliberately read-only: Reading Memory changes its own local database, never the opened Markdown bytes. It does not include a source editor, accounts, cloud sync, vaults, plugins, rendered math, executable Mermaid diagrams, remote images, automatic/fuzzy anchor reassignment, bulk repair, or scheduled resurfacing. Conventional footnote definitions and indented continuation blocks are supported; lazy unindented continuations, nested references inside footnote definitions, and escaped closing brackets in footnote identifiers remain literal Markdown.
 
 The main app intentionally runs without App Sandbox so arbitrary Markdown files and their sibling images work in place without repeated folder grants. The tradeoff is less filesystem containment than a sandboxed app. The Quick Look extension remains sandboxed and receives no containing-folder authorization from the app: it can render the selected Markdown document, but relative sibling images are omitted whenever macOS grants access only to that file. The scripted Release artifact is ad-hoc signed for local use. It is not notarized, suitable for redistribution, or prepared for the Mac App Store; another Mac may reject it or require that user to build it locally. The workflow does not upload the app or require Apple Developer credentials.

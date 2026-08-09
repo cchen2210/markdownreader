@@ -8,3 +8,6 @@ build/
 Build/
 xcuserdata/
 *.xcuserstate
+*.profraw
+.gstack/
+.swiftpm-cache/

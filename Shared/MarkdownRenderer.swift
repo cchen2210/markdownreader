@@ -12,30 +12,47 @@ enum MarkdownRenderer {
     static let maximumLinkDestinationCharacters = 2_048
     static let maximumAutolinkTextCharacters = 64 * 1_024
 
-    static func render(source: String, documentURL: URL?) -> RenderedMarkdown {
+    static func render(source: String, sourceData: Data? = nil, documentURL: URL?) -> RenderedMarkdown {
         let revision = UUID()
+        let exactSourceData = sourceData ?? Data(source.utf8)
+        let sourceWithoutBOM = source.first == "\u{FEFF}" ? String(source.dropFirst()) : source
+        let displaySource = MarkdownTextSafety.sanitizedForDisplay(sourceWithoutBOM)
         let imageRoot = documentURL?
             .deletingLastPathComponent()
             .standardizedFileURL
             .resolvingSymlinksInPath()
-        guard source.utf8.count <= maximumSourceBytes else {
+        guard exactSourceData.count <= maximumSourceBytes else {
             return RenderedMarkdown(
                 revision: revision,
                 bodyHTML: "<p class=\"render-limit\">This document is too large to preview safely.</p>",
                 outline: [],
                 linkTargets: [:],
                 imageAssets: [:],
-                imageRoot: imageRoot
+                imageRoot: imageRoot,
+                projection: nil
             )
         }
-        let footnotes = MarkdownFootnotes.process(source)
+        let projection = try? DocumentProjection.build(
+            sourceData: exactSourceData,
+            documentURL: documentURL,
+            renderRevision: revision,
+            expectedDisplaySource: displaySource
+        )
+        let footnotes = MarkdownFootnotes.process(displaySource)
         let document = Document(parsing: footnotes.bodySource, source: documentURL)
         var visitor = SafeHTMLVisitor(
             documentURL: documentURL,
             resourceToken: revision.uuidString.lowercased(),
             footnotes: footnotes
         )
-        let bodyHTML = visitor.visit(document) + visitor.renderFootnotes()
+        // Both calls mutate visitor state: the body records referenced
+        // footnotes and the second call consumes that record for backlinks.
+        // Sequence them explicitly instead of relying on operator-argument
+        // evaluation order (which differs across Swift language modes).
+        let documentHTML = visitor.visit(document)
+        let footnoteHTML = visitor.renderFootnotes()
+        let bodyHTML = documentHTML + footnoteHTML
+        let checkedProjection = visitor.didEmitRenderLimit ? nil : projection
 
         return RenderedMarkdown(
             revision: revision,
@@ -43,7 +60,8 @@ enum MarkdownRenderer {
             outline: visitor.outline,
             linkTargets: visitor.linkTargets,
             imageAssets: visitor.imageAssets,
-            imageRoot: imageRoot
+            imageRoot: imageRoot,
+            projection: checkedProjection
         )
     }
 }
@@ -66,13 +84,17 @@ private struct SafeHTMLVisitor: MarkupVisitor {
     private var inTableHead = false
     private var visitedNodeCount = 0
     private var nestingDepth = 0
-    private var didEmitRenderLimit = false
+    private(set) var didEmitRenderLimit = false
     private var imageOccurrenceCount = 0
     private var imageIDByURL: [URL: String] = [:]
     private var declaredImageBytes = 0
     private var autolinkingSuppressionDepth = 0
     private var isRenderingFootnoteDefinition = false
     private var renderedFootnoteReferences: [String: [MarkdownFootnotes.Reference]] = [:]
+    private var nextMemoryBlockID = 0
+    private var nextMemoryRunID = 0
+    private var activeMemoryBlockID: String?
+    private var semanticBlockSuppressionDepth = 0
 
     private(set) var outline: [OutlineEntry] = []
     private(set) var linkTargets: [String: String] = [:]
@@ -130,7 +152,15 @@ private struct SafeHTMLVisitor: MarkupVisitor {
     }
 
     mutating func visitParagraph(_ paragraph: Paragraph) -> String {
-        "<p>\(renderChildren(paragraph))</p>\n"
+        guard semanticBlockSuppressionDepth == 0, !isRenderingFootnoteDefinition else {
+            return "<p>\(renderChildren(paragraph))</p>\n"
+        }
+        let block = allocateMemoryBlock(kind: "paragraph")
+        let priorBlock = activeMemoryBlockID
+        activeMemoryBlockID = block.id
+        let content = renderChildren(paragraph)
+        activeMemoryBlockID = priorBlock
+        return "<p\(block.attributes)>\(content)</p>\n"
     }
 
     mutating func visitHeading(_ heading: Heading) -> String {
@@ -140,22 +170,33 @@ private struct SafeHTMLVisitor: MarkupVisitor {
         if !isRenderingFootnoteDefinition {
             outline.append(OutlineEntry(id: headingID, level: level, title: title.isEmpty ? "Untitled section" : title))
         }
-        return "<h\(level) id=\"\(escapeAttribute(headingID))\">\(renderChildren(heading))</h\(level)>\n"
+        guard semanticBlockSuppressionDepth == 0, !isRenderingFootnoteDefinition else {
+            return "<h\(level) id=\"\(escapeAttribute(headingID))\">\(renderChildren(heading))</h\(level)>\n"
+        }
+        let block = allocateMemoryBlock(kind: "heading")
+        let priorBlock = activeMemoryBlockID
+        activeMemoryBlockID = block.id
+        let content = renderChildren(heading)
+        activeMemoryBlockID = priorBlock
+        return "<h\(level) id=\"\(escapeAttribute(headingID))\"\(block.attributes)>\(content)</h\(level)>\n"
     }
 
     mutating func visitText(_ text: Text) -> String {
-        guard autolinkingSuppressionDepth == 0 else {
-            return escapeText(text.string)
+        if autolinkingSuppressionDepth == 0 {
+            return renderTextWithFootnotes(text)
         }
-        return renderTextWithFootnotes(text)
+        return wrapMemoryRun(escapeText(text.string))
     }
 
     mutating func visitSoftBreak(_ softBreak: SoftBreak) -> String {
-        "\n"
+        guard activeMemoryBlockID != nil else { return "\n" }
+        return wrapMemoryRun(" ")
     }
 
     mutating func visitLineBreak(_ lineBreak: LineBreak) -> String {
-        "<br>\n"
+        guard activeMemoryBlockID != nil else { return "<br>\n" }
+        let runID = allocateMemoryRunID()
+        return "<br data-memory-run=\"\(runID)\" data-memory-run-kind=\"line-break\">\n"
     }
 
     mutating func visitEmphasis(_ emphasis: Emphasis) -> String {
@@ -171,7 +212,7 @@ private struct SafeHTMLVisitor: MarkupVisitor {
     }
 
     mutating func visitInlineCode(_ inlineCode: InlineCode) -> String {
-        "<code>\(escapeText(inlineCode.code))</code>"
+        "<code>\(wrapMemoryRun(escapeText(inlineCode.code)))</code>"
     }
 
     mutating func visitCodeBlock(_ codeBlock: CodeBlock) -> String {
@@ -179,11 +220,29 @@ private struct SafeHTMLVisitor: MarkupVisitor {
         let languageClass = language.map { " class=\"language-\(escapeAttribute($0))\"" } ?? ""
         let languageLabel = language.map { "<div class=\"code-label\">\(escapeText($0))</div>" } ?? ""
         let highlightedCode = SyntaxHighlighter.highlight(codeBlock.code, language: codeBlock.language)
-        return "<div class=\"code-block\">\(languageLabel)<pre tabindex=\"0\"><code\(languageClass)>\(highlightedCode)</code></pre></div>\n"
+        guard semanticBlockSuppressionDepth == 0, !isRenderingFootnoteDefinition else {
+            return "<div class=\"code-block\">\(languageLabel)<pre tabindex=\"0\"><code\(languageClass)>\(wrapMemoryRun(highlightedCode))</code></pre></div>\n"
+        }
+        let block = allocateMemoryBlock(kind: "codeBlock")
+        let priorBlock = activeMemoryBlockID
+        activeMemoryBlockID = block.id
+        let content = wrapMemoryRun(highlightedCode)
+        activeMemoryBlockID = priorBlock
+        return "<div class=\"code-block\"\(block.attributes)>\(languageLabel)<pre tabindex=\"0\"><code\(languageClass)>\(content)</code></pre></div>\n"
     }
 
     mutating func visitBlockQuote(_ blockQuote: BlockQuote) -> String {
-        "<blockquote>\(renderChildren(blockQuote))</blockquote>\n"
+        guard semanticBlockSuppressionDepth == 0, !isRenderingFootnoteDefinition else {
+            return "<blockquote>\(renderChildren(blockQuote))</blockquote>\n"
+        }
+        let block = allocateMemoryBlock(kind: "blockQuote")
+        let priorBlock = activeMemoryBlockID
+        activeMemoryBlockID = block.id
+        semanticBlockSuppressionDepth += 1
+        let content = renderChildren(blockQuote)
+        semanticBlockSuppressionDepth -= 1
+        activeMemoryBlockID = priorBlock
+        return "<blockquote\(block.attributes)>\(content)</blockquote>\n"
     }
 
     mutating func visitThematicBreak(_ thematicBreak: ThematicBreak) -> String {
@@ -208,7 +267,18 @@ private struct SafeHTMLVisitor: MarkupVisitor {
         } else {
             task = ""
         }
-        return "<li\(listItem.checkbox == nil ? "" : " class=\"task-item\"")>\(task)\(renderChildren(listItem))</li>\n"
+        let className = listItem.checkbox == nil ? "" : " class=\"task-item\""
+        guard semanticBlockSuppressionDepth == 0, !isRenderingFootnoteDefinition else {
+            return "<li\(className)>\(task)\(renderChildren(listItem))</li>\n"
+        }
+        let block = allocateMemoryBlock(kind: "listItem")
+        let priorBlock = activeMemoryBlockID
+        activeMemoryBlockID = block.id
+        semanticBlockSuppressionDepth += 1
+        let content = renderChildren(listItem)
+        semanticBlockSuppressionDepth -= 1
+        activeMemoryBlockID = priorBlock
+        return "<li\(className)\(block.attributes)>\(task)\(content)</li>\n"
     }
 
     mutating func visitLink(_ link: Link) -> String {
@@ -270,11 +340,19 @@ private struct SafeHTMLVisitor: MarkupVisitor {
     }
 
     mutating func visitHTMLBlock(_ html: HTMLBlock) -> String {
-        "<pre class=\"raw-html\"><code>\(escapeText(html.rawHTML))</code></pre>\n"
+        guard semanticBlockSuppressionDepth == 0, !isRenderingFootnoteDefinition else {
+            return "<pre class=\"raw-html\"><code>\(wrapMemoryRun(escapeText(html.rawHTML), supported: false))</code></pre>\n"
+        }
+        let block = allocateMemoryBlock(kind: "rawHTML", captureSupported: false)
+        let priorBlock = activeMemoryBlockID
+        activeMemoryBlockID = block.id
+        let content = wrapMemoryRun(escapeText(html.rawHTML), supported: false)
+        activeMemoryBlockID = priorBlock
+        return "<pre class=\"raw-html\"\(block.attributes)><code>\(content)</code></pre>\n"
     }
 
     mutating func visitInlineHTML(_ inlineHTML: InlineHTML) -> String {
-        "<code class=\"raw-html-inline\">\(escapeText(inlineHTML.rawHTML))</code>"
+        "<code class=\"raw-html-inline\">\(wrapMemoryRun(escapeText(inlineHTML.rawHTML), supported: false))</code>"
     }
 
     mutating func visitTable(_ table: Table) -> String {
@@ -319,7 +397,43 @@ private struct SafeHTMLVisitor: MarkupVisitor {
 
         let colspan = tableCell.colspan > 1 ? " colspan=\"\(tableCell.colspan)\"" : ""
         let rowspan = tableCell.rowspan > 1 ? " rowspan=\"\(tableCell.rowspan)\"" : ""
-        return "<\(tag)\(alignment)\(colspan)\(rowspan)>\(renderChildren(tableCell))</\(tag)>\n"
+        guard semanticBlockSuppressionDepth == 0, !isRenderingFootnoteDefinition else {
+            return "<\(tag)\(alignment)\(colspan)\(rowspan)>\(renderChildren(tableCell))</\(tag)>\n"
+        }
+        let block = allocateMemoryBlock(kind: "tableCell")
+        let priorBlock = activeMemoryBlockID
+        activeMemoryBlockID = block.id
+        semanticBlockSuppressionDepth += 1
+        let content = renderChildren(tableCell)
+        semanticBlockSuppressionDepth -= 1
+        activeMemoryBlockID = priorBlock
+        return "<\(tag)\(alignment)\(colspan)\(rowspan)\(block.attributes)>\(content)</\(tag)>\n"
+    }
+
+    private mutating func allocateMemoryBlock(
+        kind: String,
+        captureSupported: Bool = true
+    ) -> (id: String, attributes: String) {
+        let id = "block-\(nextMemoryBlockID)"
+        nextMemoryBlockID += 1
+        let supported = captureSupported ? "true" : "false"
+        return (
+            id,
+            " data-memory-block=\"\(id)\" data-memory-kind=\"\(kind)\" data-memory-capture=\"\(supported)\""
+        )
+    }
+
+    private mutating func allocateMemoryRunID() -> String {
+        let id = "run-\(nextMemoryRunID)"
+        nextMemoryRunID += 1
+        return id
+    }
+
+    private mutating func wrapMemoryRun(_ html: String, supported: Bool = true) -> String {
+        guard activeMemoryBlockID != nil else { return html }
+        let id = allocateMemoryRunID()
+        let capture = supported ? "true" : "false"
+        return "<span data-memory-run=\"\(id)\" data-memory-run-kind=\"text\" data-memory-capture=\"\(capture)\">\(html)</span>"
     }
 
     private mutating func uniqueHeadingID(for title: String) -> String {
@@ -387,7 +501,7 @@ private struct SafeHTMLVisitor: MarkupVisitor {
             let noteDocument = Document(parsing: definition.markdown)
             let noteHTML = visit(noteDocument)
             let backReferences = renderedFootnoteReferences[definition.normalizedIdentifier] ?? []
-            let backlinks = backReferences.map { reference in
+            let backlinks: String = backReferences.map { reference -> String in
                 let suffix = reference.occurrence == 1 ? "" : " \(reference.occurrence)"
                 return "<a class=\"footnote-backref\" href=\"#\(escapeAttribute(reference.referenceID))\" aria-label=\"Back to footnote \(noteNumber) reference \(reference.occurrence)\">↩\(suffix)</a>"
             }.joined(separator: " ")
@@ -408,7 +522,7 @@ private struct SafeHTMLVisitor: MarkupVisitor {
                       && $0.span.upperUTF8Column <= range.upperBound.column
               }),
               footnoteSourceLines.indices.contains(range.lowerBound.line - 1) else {
-            return renderBareLinks(in: text.string)
+            return wrapMemoryRun(renderBareLinks(in: text.string))
         }
 
         let sourceLine = footnoteSourceLines[range.lowerBound.line - 1]
@@ -417,7 +531,7 @@ private struct SafeHTMLVisitor: MarkupVisitor {
         guard lowerOffset >= 0,
               upperOffset >= lowerOffset,
               upperOffset <= sourceLine.count else {
-            return renderBareLinks(in: text.string)
+            return wrapMemoryRun(renderBareLinks(in: text.string))
         }
 
         let rawSlice = Array(sourceLine[lowerOffset..<upperOffset])
@@ -425,7 +539,7 @@ private struct SafeHTMLVisitor: MarkupVisitor {
         let rawCandidates = Self.footnoteCandidateRanges(in: rawSlice)
         let renderedCandidates = Self.footnoteCandidateRanges(in: renderedBytes)
         guard rawCandidates.count == renderedCandidates.count else {
-            return renderBareLinks(in: text.string)
+            return wrapMemoryRun(renderBareLinks(in: text.string))
         }
 
         var replacements: [(Range<Int>, MarkdownFootnotes.Reference)] = []
@@ -439,19 +553,29 @@ private struct SafeHTMLVisitor: MarkupVisitor {
                 replacements.append((renderedCandidate, reference))
             }
         }
-        guard !replacements.isEmpty else { return renderBareLinks(in: text.string) }
+        guard !replacements.isEmpty else {
+            return wrapMemoryRun(renderBareLinks(in: text.string))
+        }
 
         var html = ""
         var cursor = 0
         for (candidate, reference) in replacements {
             guard candidate.lowerBound >= cursor, candidate.upperBound <= renderedBytes.count else {
-                return renderBareLinks(in: text.string)
+                return wrapMemoryRun(renderBareLinks(in: text.string))
             }
-            html += renderBareLinks(in: String(decoding: renderedBytes[cursor..<candidate.lowerBound], as: UTF8.self))
-            html += renderFootnoteReference(reference)
+            let plain = renderBareLinks(
+                in: String(decoding: renderedBytes[cursor..<candidate.lowerBound], as: UTF8.self)
+            )
+            if !plain.isEmpty {
+                html += wrapMemoryRun(plain)
+            }
+            html += wrapMemoryRun(renderFootnoteReference(reference), supported: false)
             cursor = candidate.upperBound
         }
-        html += renderBareLinks(in: String(decoding: renderedBytes[cursor...], as: UTF8.self))
+        let trailing = renderBareLinks(in: String(decoding: renderedBytes[cursor...], as: UTF8.self))
+        if !trailing.isEmpty {
+            html += wrapMemoryRun(trailing)
+        }
         return html
     }
 

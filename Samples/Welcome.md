@@ -22,6 +22,13 @@ Open a local Markdown file and get a calm, finished document instead of an edito
 | Outline | `⌃⌘S` | Show or hide headings |
 | Editor | `⌥⌘E` | Open this file elsewhere |
 | Source | `⌥⌘\\` | Toggle read-only source |
+| Remember | `⇧⌘M` | Save the selected passage explicitly |
+| Bookmark | `⇧⌘B` | Save the current heading |
+| Reading Memory | `⇧⌘R` | Open the global reading notebook |
+
+## Reading Memory
+
+Select part of this paragraph and press `⇧⌘M` to remember it. Selection alone never saves anything, and the Markdown file remains unchanged. Add a private margin note, edit this file externally, and the reader will either recover the exact passage or ask you to repair its location explicitly.
 
 ## Code stays readable
 

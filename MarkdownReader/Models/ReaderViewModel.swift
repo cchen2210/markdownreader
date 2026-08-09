@@ -1,9 +1,17 @@
+import CryptoKit
 import Foundation
+
+struct ReaderContentSnapshot: Sendable {
+    let source: String
+    let sourceData: Data
+    let rendered: RenderedMarkdown
+
+    var projection: DocumentProjection? { rendered.projection }
+}
 
 @MainActor
 final class ReaderViewModel: ObservableObject {
-    @Published private(set) var source: String
-    @Published private(set) var rendered: RenderedMarkdown
+    @Published private(set) var content: ReaderContentSnapshot
     @Published private(set) var fileURL: URL?
     @Published var selectedHeadingID: String?
     @Published private(set) var updateNotice: String?
@@ -16,12 +24,21 @@ final class ReaderViewModel: ObservableObject {
     private var reloadTask: Task<Void, Never>?
     private var renderTask: Task<Void, Never>?
 
-    init(source: String, fileURL: URL?) {
-        self.source = source
+    var source: String { content.source }
+    var sourceData: Data { content.sourceData }
+    var rendered: RenderedMarkdown { content.rendered }
+    var coordinatedFilePresenter: FileRefreshPresenter? { presenter }
+
+    init(source: String, sourceData: Data? = nil, fileURL: URL?) {
+        let exactData = sourceData ?? Data(source.utf8)
         self.fileURL = fileURL
-        rendered = MarkdownRenderer.render(source: "", documentURL: fileURL)
+        content = ReaderContentSnapshot(
+            source: source,
+            sourceData: exactData,
+            rendered: MarkdownRenderer.render(source: "", sourceData: Data(), documentURL: fileURL)
+        )
         isRendering = true
-        renderSource(source, for: fileURL, notice: nil)
+        renderSource(source, sourceData: exactData, for: fileURL, notice: nil)
     }
 
     func startMonitoring(enabled: Bool) {
@@ -71,16 +88,23 @@ final class ReaderViewModel: ObservableObject {
                 let load = Task.detached(priority: .userInitiated) {
                     let data = try Self.coordinatedData(at: fileURL, presenter: presenter)
                     let newSource = try MarkdownTextDecoder.decode(data)
-                    let newRender = MarkdownRenderer.render(source: newSource, documentURL: fileURL)
-                    return (newSource, newRender)
+                    let newRender = MarkdownRenderer.render(
+                        source: newSource,
+                        sourceData: data,
+                        documentURL: fileURL
+                    )
+                    return (data, newSource, newRender)
                 }
-                let (newSource, newRender) = try await load.value
+                let (newData, newSource, newRender) = try await load.value
                 guard !Task.isCancelled,
                       let self,
                       self.fileURL == fileURL,
-                      newSource != self.source else { return }
-                self.source = newSource
-                self.rendered = newRender
+                      newData != self.sourceData else { return }
+                self.content = ReaderContentSnapshot(
+                    source: newSource,
+                    sourceData: newData,
+                    rendered: newRender
+                )
                 self.isRendering = false
                 self.errorMessage = nil
                 self.showNotice("Updated")
@@ -98,10 +122,22 @@ final class ReaderViewModel: ObservableObject {
         errorMessage = nil
     }
 
+    func coordinatedSourceMatches(revisionHash: String) async -> Bool {
+        guard let fileURL else { return false }
+        let presenter = presenter
+        return await Task.detached(priority: .userInitiated) {
+            guard let data = try? Self.coordinatedData(at: fileURL, presenter: presenter) else {
+                return false
+            }
+            let hash = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            return hash == revisionHash
+        }.value
+    }
+
     private func handleMove(to newURL: URL) {
         fileURL = newURL
         reloadTask?.cancel()
-        renderSource(source, for: newURL, notice: "File moved")
+        renderSource(source, sourceData: sourceData, for: newURL, notice: "File moved")
     }
 
     private func scheduleReloadFromDisk() {
@@ -114,19 +150,24 @@ final class ReaderViewModel: ObservableObject {
         }
     }
 
-    private func renderSource(_ source: String, for url: URL?, notice: String?) {
+    private func renderSource(_ source: String, sourceData: Data, for url: URL?, notice: String?) {
         renderTask?.cancel()
         isRendering = true
         renderTask = Task { [weak self] in
             let operation = Task.detached(priority: .userInitiated) {
-                MarkdownRenderer.render(source: source, documentURL: url)
+                MarkdownRenderer.render(source: source, sourceData: sourceData, documentURL: url)
             }
             let newRender = await operation.value
             guard !Task.isCancelled,
                   let self,
                   self.source == source,
+                  self.sourceData == sourceData,
                   self.fileURL == url else { return }
-            self.rendered = newRender
+            self.content = ReaderContentSnapshot(
+                source: source,
+                sourceData: sourceData,
+                rendered: newRender
+            )
             self.isRendering = false
             if let notice {
                 self.showNotice(notice)
