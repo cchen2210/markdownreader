@@ -1,0 +1,10 @@
+.DS_Store
+.context/
+.build/
+.derivedData/
+.derivedData-*/
+DerivedData/
+build/
+Build/
+xcuserdata/
+*.xcuserstate

@@ -1,0 +1,108 @@
+name: MarkdownReader
+
+options:
+  bundleIdPrefix: com.cchen
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "14.0"
+
+settings:
+  base:
+    CLANG_ENABLE_MODULES: YES
+    CURRENT_PROJECT_VERSION: 1
+    ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GENERATE_INFOPLIST_FILE: NO
+    MACOSX_DEPLOYMENT_TARGET: "14.0"
+    MARKETING_VERSION: 0.1.0
+    SWIFT_STRICT_CONCURRENCY: targeted
+    SWIFT_VERSION: 5.0
+  configs:
+    Release:
+      CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+      ONLY_ACTIVE_ARCH: NO
+
+packages:
+  swift-markdown:
+    url: https://github.com/swiftlang/swift-markdown.git
+    exactVersion: 0.8.0
+
+targets:
+  MarkdownReader:
+    type: application
+    platform: macOS
+    sources:
+      - path: MarkdownReader
+      - path: Shared
+    dependencies:
+      - package: swift-markdown
+        product: Markdown
+      - target: MarkdownQuickLook
+        embed: true
+    settings:
+      base:
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        COMBINE_HIDPI_IMAGES: YES
+        DEVELOPMENT_TEAM: 2M7SN292PV
+        INFOPLIST_FILE: MarkdownReader/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.cchen.MarkdownReader
+        PRODUCT_NAME: Markdown Reader
+        PRODUCT_MODULE_NAME: MarkdownReader
+        SWIFT_EMIT_LOC_STRINGS: YES
+
+  MarkdownQuickLook:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: QuickLookExtension
+      - path: Shared
+    dependencies:
+      - package: swift-markdown
+        product: Markdown
+    settings:
+      base:
+        APPLICATION_EXTENSION_API_ONLY: YES
+        CODE_SIGN_ENTITLEMENTS: QuickLookExtension/MarkdownQuickLook.entitlements
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 2M7SN292PV
+        INFOPLIST_FILE: QuickLookExtension/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.cchen.MarkdownReader.QuickLook
+        PRODUCT_NAME: Markdown Quick Look
+        SKIP_INSTALL: YES
+
+  MarkdownReaderTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: MarkdownReaderTests
+    dependencies:
+      - target: MarkdownReader
+    settings:
+      base:
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 2M7SN292PV
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: com.cchen.MarkdownReaderTests
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Markdown Reader.app/Contents/MacOS/Markdown Reader"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+schemes:
+  MarkdownReader:
+    build:
+      targets:
+        MarkdownReader: all
+        MarkdownQuickLook: all
+        MarkdownReaderTests: [test]
+    test:
+      gatherCoverageData: true
+      macroExpansion: MarkdownReader
+      targets:
+        - MarkdownReaderTests
+    run:
+      config: Debug
+      executable: MarkdownReader
+      macroExpansion: MarkdownReader
+    profile:
+      config: Release
+      executable: MarkdownReader
