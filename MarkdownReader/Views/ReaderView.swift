@@ -32,6 +32,7 @@ struct ReaderView: View {
     @State private var showReaderOptions = false
     @State private var findQuery = ""
     @State private var memorySearchQuery = ""
+    @State private var selectedHeadingID: String?
     @State private var confirmsMemoryDeletion = false
     @State private var repairSession: MemoryRepairSession?
     @State private var measuredMemoryNoteHeights: [UUID: CGFloat] = [:]
@@ -123,7 +124,7 @@ struct ReaderView: View {
             webController.onMemoryActivated = nil
             Task {
                 await memorySession.saveReadingState(
-                    selectedHeadingID: model.selectedHeadingID,
+                    selectedHeadingID: selectedHeadingID,
                     outline: model.rendered.outline,
                     enabled: preferences.restorePosition,
                     library: memoryLibrary
@@ -134,7 +135,7 @@ struct ReaderView: View {
         .onChange(of: preferences.automaticRefresh) { _, enabled in
             model.setMonitoring(enabled: enabled)
         }
-        .onChange(of: model.selectedHeadingID) { _, headingID in
+        .onChange(of: selectedHeadingID) { _, headingID in
             guard let headingID else { return }
             if displayMode == .source {
                 displayMode = .preview
@@ -169,6 +170,10 @@ struct ReaderView: View {
             }
         }
         .onChange(of: model.rendered.revision) { _, _ in
+            if let selectedHeadingID,
+               !model.rendered.outline.contains(where: { $0.id == selectedHeadingID }) {
+                self.selectedHeadingID = nil
+            }
             synchronizeMemory()
         }
         .onChange(of: model.fileURL) { _, _ in
@@ -263,11 +268,12 @@ struct ReaderView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
             .padding(10)
 
             switch sidebarMode {
             case .outline:
-                OutlineSidebar(entries: model.rendered.outline, selection: $model.selectedHeadingID)
+                OutlineSidebar(entries: model.rendered.outline, selection: $selectedHeadingID)
             case .memory:
                 CurrentDocumentMemorySidebar(
                     memories: memorySession.presentations,
@@ -507,16 +513,6 @@ struct ReaderView: View {
 
     @ToolbarContentBuilder
     private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .navigation) {
-            Button {
-                toggleOutline()
-            } label: {
-                Image(systemName: "sidebar.left")
-            }
-            .help("Toggle Outline")
-            .accessibilityLabel("Toggle Outline")
-        }
-
         ToolbarItem(placement: .principal) {
             Picker("View", selection: $displayMode) {
                 ForEach(DisplayMode.allCases) { mode in
@@ -657,10 +653,10 @@ struct ReaderView: View {
     private func moveHeading(by offset: Int) {
         let entries = model.rendered.outline
         guard !entries.isEmpty else { return }
-        let currentIndex = model.selectedHeadingID.flatMap { id in entries.firstIndex { $0.id == id } }
+        let currentIndex = selectedHeadingID.flatMap { id in entries.firstIndex { $0.id == id } }
         let startingIndex = currentIndex ?? (offset > 0 ? -1 : entries.count)
         let nextIndex = min(max(startingIndex + offset, 0), entries.count - 1)
-        model.selectedHeadingID = entries[nextIndex].id
+        selectedHeadingID = entries[nextIndex].id
     }
 
     private func openInEditor() {

@@ -1,7 +1,89 @@
+import Combine
+import WebKit
 import XCTest
 @testable import MarkdownReader
 
 final class ReaderUtilityTests: XCTestCase {
+    @MainActor
+    func testStaleMemoryMarkCompletionDoesNotScheduleAnotherApplication() async throws {
+        enum TestError: Error { case unexpectedRetry }
+
+        let context = MemoryRenderContext(
+            sourceRevisionHash: "revision",
+            projectionVersion: 1,
+            renderRevision: UUID()
+        )
+        let response: [String: Any] = [
+            "sourceRevisionHash": context.sourceRevisionHash,
+            "projectionVersion": context.projectionVersion,
+            "renderRevision": context.renderRevision.uuidString.lowercased(),
+            "scrollY": 0,
+            "documentHeight": 100,
+            "baseDocumentHeight": 100,
+            "viewportWidth": 800,
+            "viewportHeight": 600,
+            "bottomInset": 0,
+            "marks": [],
+        ]
+        var invocationCount = 0
+        var continuations: [CheckedContinuation<Any?, Never>] = []
+        let controller = ReaderWebController { _ in
+            invocationCount += 1
+            guard invocationCount <= 2 else { throw TestError.unexpectedRetry }
+            return await withCheckedContinuation { continuation in
+                continuations.append(continuation)
+            }
+        }
+
+        controller.setMemoryMarks([], context: context)
+        try await waitUntil { continuations.count == 1 }
+        controller.setMemoryMarks([], context: context)
+        try await waitUntil { continuations.count == 2 }
+
+        let staleCompletion = continuations[0]
+        let currentCompletion = continuations[1]
+        staleCompletion.resume(returning: response)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(invocationCount, 2, "A stale completion must not manufacture a replacement request")
+
+        currentCompletion.resume(returning: response)
+        try await waitUntil { controller.memoryDocumentGeometry.documentHeight == 100 }
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(invocationCount, 2)
+    }
+
+    @MainActor
+    func testInitialWebViewAttachmentDoesNotPublishGeometryReset() async {
+        let controller = ReaderWebController()
+        var publicationCount = 0
+        let observation = controller.objectWillChange.sink {
+            publicationCount += 1
+        }
+        let webView = WKWebView(frame: .zero)
+
+        controller.attach(webView)
+        await Task.yield()
+
+        withExtendedLifetime(observation) {
+            XCTAssertEqual(
+                publicationCount,
+                0,
+                "Initial attachment must not publish while SwiftUI is creating its representable view"
+            )
+        }
+    }
+
+    @MainActor
+    func testViewModelDoesNotOwnOutlineSelectionState() {
+        let model = ReaderViewModel(source: "# Heading", fileURL: nil)
+        let storedPropertyNames = Mirror(reflecting: model).children.compactMap(\.label)
+
+        XCTAssertFalse(
+            storedPropertyNames.contains("_selectedHeadingID"),
+            "Outline List selection belongs in ReaderView @State, not an ObservableObject publisher"
+        )
+    }
+
     @MainActor
     func testViewModelRendersAndReloadsWithoutPublishingStaleContent() async throws {
         let directory = FileManager.default.temporaryDirectory

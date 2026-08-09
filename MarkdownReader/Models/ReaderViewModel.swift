@@ -13,7 +13,6 @@ struct ReaderContentSnapshot: Sendable {
 final class ReaderViewModel: ObservableObject {
     @Published private(set) var content: ReaderContentSnapshot
     @Published private(set) var fileURL: URL?
-    @Published var selectedHeadingID: String?
     @Published private(set) var updateNotice: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var isRendering: Bool

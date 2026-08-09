@@ -4,6 +4,8 @@ import WebKit
 
 @MainActor
 final class ReaderWebController: NSObject, ObservableObject {
+    typealias MemoryMarkJavaScriptEvaluator = @MainActor ([String: Any]) async throws -> Any?
+
     weak var webView: WKWebView?
     var onMemoryActivated: ((UUID) -> Void)?
     @Published private(set) var findStatus: FindStatus = .idle
@@ -21,6 +23,7 @@ final class ReaderWebController: NSObject, ObservableObject {
     private var bottomInsetTask: Task<Void, Never>?
     private var bottomInsetGeneration = 0
     private var requestedMemoryBottomInset = 0.0
+    private let memoryMarkJavaScriptEvaluator: MemoryMarkJavaScriptEvaluator?
 
     enum FindStatus: Equatable {
         case idle
@@ -29,6 +32,12 @@ final class ReaderWebController: NSObject, ObservableObject {
     }
 
     override init() {
+        memoryMarkJavaScriptEvaluator = nil
+        super.init()
+    }
+
+    init(memoryMarkJavaScriptEvaluator: @escaping MemoryMarkJavaScriptEvaluator) {
+        self.memoryMarkJavaScriptEvaluator = memoryMarkJavaScriptEvaluator
         super.init()
     }
 
@@ -42,7 +51,7 @@ final class ReaderWebController: NSObject, ObservableObject {
             priorView.removeGestureRecognizer(clickRecognizer)
         }
         self.webView = webView
-        memoryDocumentGeometry = .empty
+        resetMemoryDocumentGeometryAfterViewUpdate(for: webView)
         let clickRecognizer = NSClickGestureRecognizer(target: self, action: #selector(handleReaderClick(_:)))
         clickRecognizer.buttonMask = 0x1
         webView.addGestureRecognizer(clickRecognizer)
@@ -53,6 +62,17 @@ final class ReaderWebController: NSObject, ObservableObject {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.scheduleMemoryGeometryRefresh() }
+        }
+    }
+
+    private func resetMemoryDocumentGeometryAfterViewUpdate(for webView: WKWebView) {
+        Task { @MainActor [weak self, weak webView] in
+            await Task.yield()
+            guard let self,
+                  let webView,
+                  self.webView === webView,
+                  memoryDocumentGeometry != .empty else { return }
+            memoryDocumentGeometry = .empty
         }
     }
 
@@ -461,7 +481,6 @@ final class ReaderWebController: NSObject, ObservableObject {
         context: MemoryRenderContext,
         generation: Int
     ) async {
-        guard let webView else { return }
         let rows: [[String: Any]] = marks.map { mark in
             [
                 "token": mark.token,
@@ -480,19 +499,13 @@ final class ReaderWebController: NSObject, ObservableObject {
         var arguments = Self.contextArguments(context)
         arguments["marks"] = rows
         do {
-            let result = try await webView.callAsyncJavaScript(
-                MemoryWebBridge.markProgram,
-                arguments: arguments,
-                in: nil,
-                contentWorld: MemoryWebBridge.contentWorld
-            )
+            let result = try await evaluateMemoryMarkJavaScript(arguments: arguments)
             guard !(result is NSNull), let result else { return }
             let response = try Self.decode(WebMarkGeometryResponse.self, from: result)
             guard generation == markGeneration,
                   memoryContext == context,
                   memoryMarks == marks,
                   Self.matches(response, context: context) else {
-                scheduleMemoryMarkApplication()
                 return
             }
             publishMemoryGeometry(response, marks: marks, context: context)
@@ -500,6 +513,19 @@ final class ReaderWebController: NSObject, ObservableObject {
             guard generation == markGeneration else { return }
             memoryGeometry = [:]
         }
+    }
+
+    private func evaluateMemoryMarkJavaScript(arguments: [String: Any]) async throws -> Any? {
+        if let memoryMarkJavaScriptEvaluator {
+            return try await memoryMarkJavaScriptEvaluator(arguments)
+        }
+        guard let webView else { throw MemoryWebBridgeError.readerUnavailable }
+        return try await webView.callAsyncJavaScript(
+            MemoryWebBridge.markProgram,
+            arguments: arguments,
+            in: nil,
+            contentWorld: MemoryWebBridge.contentWorld
+        )
     }
 
     private func applyPendingReadingRestore() async {
